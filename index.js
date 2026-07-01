@@ -1,9 +1,16 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { Client, Collection, Events, GatewayIntentBits, MessageFlags } = require('discord.js');
+const { Client, Collection, Events, GatewayIntentBits, MessageFlags, PermissionFlagsBits, EmbedBuilder } = require('discord.js');
 const { token } = require('./config.json');
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMembers,
+  ],
+});
 
 client.once(Events.ClientReady, (readyClient) => {
 	console.log(`Ready! Logged in as ${readyClient.user.tag}`);
@@ -56,50 +63,33 @@ client.on(Events.InteractionCreate, async (interaction) => {
 	}
 });
 
+const { loadConfig } = require('./utils/config');
+
 client.on('messageCreate', async (message) => {
-    // Ignore other bots, system messages, and messages outside the honeypot
-    if (message.author.bot || message.system || message.channel.id !== CONFIG.HONEYPOT_CHANNEL_ID) {
-        return;
-    }
+    if (message.author.bot || message.system || !message.guild) return;
+
+    const config = loadConfig();
+    const honeypotId = config[message.guild.id];
+    if (!honeypotId || message.channel.id !== honeypotId) return;
 
     const member = message.member;
     const guild = message.guild;
 
-    // Check if the bot has the permissions required to ban members
     if (!guild.members.me.permissions.has(PermissionFlagsBits.BanMembers)) {
         console.error('Honeypot Triggered: Missing "BanMembers" permission.');
         return;
     }
 
-    // Safety Check: Prevent accidental banning of administrators or server owners
-    if (member.permissions.has(PermissionFlagsBits.Administrator)) {
+    // Prevent accidental banning of admins / owners
+    if (member && member.permissions.has(PermissionFlagsBits.Administrator)) {
         return;
     }
 
     try {
-        // 1. Instantly ban the offender and delete 7 days of their message history
         await guild.members.ban(message.author.id, {
             reason: 'Automated Honeypot Trigger: Account posted in a restricted decoy channel.',
-            deleteMessageSeconds: 7 * 24 * 60 * 60 
+            deleteMessageSeconds: 7 * 24 * 60 * 60,
         });
-
-        // 2. Log the action to the staff channel
-        const logChannel = await guild.channels.fetch(CONFIG.LOG_CHANNEL_ID);
-        if (logChannel) {
-            const logEmbed = new EmbedBuilder()
-                .setTitle('Bot Alert')
-                .setColor('#FF0000')
-                .setDescription(`A malicious user/bot was instantly banned for sending a message in <#${CONFIG.HONEYPOT_CHANNEL_ID}>.`)
-                .addFields(
-                    { name: 'User Tag', value: `${message.author.tag}`, inline: true },
-                    { name: 'User ID', value: `\`${message.author.id}\``, inline: true },
-                    { name: 'Message Content Snippet', value: `\`\`\`${message.content.slice(0, 500) || '[No Text/Attachment]'}\`\`\`` }
-                )
-                .setTimestamp();
-
-            await logChannel.send({ embeds: [logEmbed] });
-        }
-
     } catch (error) {
         console.error(`Failed to execute honeypot action on user ${message.author.id}:`, error);
     }
